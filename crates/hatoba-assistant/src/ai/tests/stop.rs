@@ -50,6 +50,26 @@ async fn stopping_mid_stream_keeps_the_text_that_streamed() {
     assert_eq!(f.detail(&conv).entries.len(), 2);
 }
 
+#[tokio::test]
+async fn a_stopped_reply_on_a_local_tab_keeps_its_shell() {
+    let (base_url, _) = stalling_server(&[text_delta("Clon")]).await;
+    let f = Fixture::with_base_url(None, base_url);
+    let wsl = f.local("DEMO-PC", "Ubuntu", crate::dto::LocalShellKind::Wsl);
+    let (started, sink) = f.send_with(None, "clone it", wsl).await;
+    let conv = started.conversation.id;
+    streamed(&sink, "Clon").await;
+    f.manager.stop(&f.vault, f.env.as_ref(), &conv).await;
+    assert_eq!(sink.ended().await, AiTurnEndReason::Stopped);
+    // §7.5: the next message on another shell is noted from it, as after a whole reply.
+    match &f.entries(&conv)[1].body {
+        EntryBody::Assistant(a) => {
+            assert!(a.interrupted);
+            assert_eq!(a.shell.as_deref(), Some("Ubuntu"));
+        }
+        other => panic!("not a reply: {other:?}"),
+    }
+}
+
 #[test]
 fn a_stop_keeps_the_text_and_the_complete_calls_that_streamed() {
     let streamed = |text: &str, tool_calls: Vec<ToolCall>| Streamed {
@@ -57,6 +77,7 @@ fn a_stop_keeps_the_text_and_the_complete_calls_that_streamed() {
         model_id: "m".into(),
         text: text.into(),
         tool_calls,
+        shell: Some("Ubuntu".into()),
         mcp_servers: Some(vec!["Context7".into()]),
     };
     let call = ToolCall {
@@ -76,6 +97,7 @@ fn a_stop_keeps_the_text_and_the_complete_calls_that_streamed() {
             tool_calls: vec![call.clone()],
             finish: Finish::ToolCalls,
             terminal: Some(false),
+            shell: Some("Ubuntu".into()),
             mcp_servers: Some(vec!["Context7".into()]),
             interrupted: true,
             ..AssistantEntry::default()
@@ -124,6 +146,7 @@ async fn a_stop_keeps_the_text_when_the_task_acts_first() {
         model_id: "m1".into(),
         text: "The disk is 4".into(),
         tool_calls: Vec::new(),
+        shell: None,
         mcp_servers: None,
     });
     // What the turn loop and `task` do when the request returns cancelled.
